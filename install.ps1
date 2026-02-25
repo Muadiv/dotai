@@ -21,9 +21,7 @@ param(
     [switch]$Restore,
     [string]$RestoreTimestamp = "",
     [switch]$AutoRead,
-    [switch]$Uninstall,
-    [ValidateSet("sonnet", "opus", "haiku", "none")]
-    [string]$Model = "sonnet"
+    [switch]$Uninstall
 )
 
 Set-StrictMode -Version Latest
@@ -58,12 +56,6 @@ $HomeStatusline = Join-Path $HomeDir "statusline.sh"
 $ClaudeSettings = Join-Path $ClaudeHome "settings.json"
 $ClaudeStatusline = Join-Path $ClaudeHome "statusline.sh"
 
-$ModelChoices = @{
-    "sonnet" = "us.anthropic.claude-sonnet-4-6"
-    "opus"   = "us.anthropic.claude-opus-4-6-v1"
-    "haiku"  = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-    "none"   = $null
-}
 
 # ---------------------------------------------------------------------------
 # File helpers
@@ -354,21 +346,9 @@ function Merge-DeepSettings {
     return $merged
 }
 
-function Test-AwsProfile {
-    param([string]$Name)
-    $awsConfig = Join-Path (Join-Path $HOME ".aws") "config"
-    if (-not (Test-Path $awsConfig)) { return $false }
-    try {
-        $text = Get-Content $awsConfig -Raw
-        return $text -match "\[profile $Name\]"
-    } catch {
-        return $false
-    }
-}
 
 function Install-GlobalSettings {
     param(
-        [string]$DefaultModel,
         [System.Collections.ArrayList]$Log
     )
 
@@ -383,11 +363,6 @@ function Install-GlobalSettings {
     } catch {
         [void]$Log.Add(@{ Status = "warning"; Label = "~/.claude/settings.json (failed to read template: $_)" })
         return
-    }
-
-    # Inject model if selected
-    if ($DefaultModel -ne "none" -and $ModelChoices[$DefaultModel]) {
-        $template["model"] = $ModelChoices[$DefaultModel]
     }
 
     # Load existing settings
@@ -435,11 +410,6 @@ function Install-GlobalSettings {
         }
     }
 
-    # Override model from template if user selected one
-    if ($DefaultModel -ne "none" -and $ModelChoices[$DefaultModel]) {
-        $merged["model"] = $ModelChoices[$DefaultModel]
-    }
-
     # Compare with existing to detect changes
     $mergedJson = ($merged | ConvertTo-Json -Depth 10)
     $existingJson = ($existing | ConvertTo-Json -Depth 10)
@@ -457,18 +427,9 @@ function Install-GlobalSettings {
         }
     }
 
-    # Warn if AWS profile not found
-    $awsProfile = "default"
-    if ($template.ContainsKey("env") -and $template["env"].ContainsKey("AWS_PROFILE")) {
-        $awsProfile = $template["env"]["AWS_PROFILE"]
-    }
-    if (-not (Test-AwsProfile -Name $awsProfile)) {
-        [void]$Log.Add(@{ Status = "warning"; Label = "AWS profile '$awsProfile' not found in ~/.aws/config - run: aws configure sso --profile $awsProfile" })
-    }
-
     # Install statusline script
     if (Test-Path $HomeStatusline) {
-        Install-SmartFile -Source $HomeStatusline -Destination $ClaudeStatusline -Label "~/.claude/statusline.sh" -Log $Log
+        Install-SmartFile -Src $HomeStatusline -Dest $ClaudeStatusline -Label "~/.claude/statusline.sh" -Log $Log
     }
 }
 
@@ -669,31 +630,6 @@ function Show-ScopeMenu {
 # Model picker
 # ---------------------------------------------------------------------------
 
-function Show-ModelPicker {
-    Clear-Host
-    Write-Banner
-    Write-Host "  Default Model" -ForegroundColor White
-    Write-Host "  Choose your default Claude model for Bedrock" -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "  This sets the model Claude Code uses when you type 'claude'." -ForegroundColor DarkGray
-    Write-Host "  You can always override per-session with --model." -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "    [1] Sonnet - Balanced: good for most tasks, cost-effective (default)" -ForegroundColor White
-    Write-Host "    [2] Opus   - Maximum capability: complex architecture, deep reasoning" -ForegroundColor White
-    Write-Host "    [3] Haiku  - Fast and light: quick edits, simple questions" -ForegroundColor White
-    Write-Host "    [4] None   - Don't set a default model" -ForegroundColor White
-    Write-Host ""
-    Write-Host "  Choice [1]: " -ForegroundColor DarkGray -NoNewline
-    $choice = Read-Host
-
-    switch ($choice) {
-        "2" { return "opus" }
-        "3" { return "haiku" }
-        "4" { return "none" }
-        default { return "sonnet" }
-    }
-}
-
 # ---------------------------------------------------------------------------
 # Options prompts
 # ---------------------------------------------------------------------------
@@ -744,7 +680,6 @@ function Invoke-Install {
         [bool]$CreateGlobalTasks,
         [bool]$CreateProjectTasks,
         [bool]$EnableAutoRead = $false,
-        [string]$SelectedModel = "sonnet",
         [string]$Cwd,
         [bool]$InRepo
     )
@@ -806,8 +741,8 @@ function Invoke-Install {
             }
         }
 
-        # Global settings.json (Bedrock config + permissions)
-        Install-GlobalSettings -DefaultModel $SelectedModel -Log $log
+        # Global settings.json (permissions)
+        Install-GlobalSettings -Log $log
     }
 
     if ($Scope -eq "project" -or $Scope -eq "both") {
@@ -900,7 +835,7 @@ function Show-Results {
 
 function Invoke-Update {
     Write-Host "Updating standards from git..." -ForegroundColor White
-    $result = & git -C $ScriptDir pull 2>&1
+    $result = & git -C "$ScriptDir" pull 2>&1
     if ($LASTEXITCODE -eq 0) {
         if ($result -match "Already up to date") {
             Write-Host "  Already up to date." -ForegroundColor DarkGray
@@ -916,8 +851,7 @@ function Invoke-Cli {
     param(
         [string]$Scope,
         [bool]$SkipTasks,
-        [bool]$EnableAutoRead = $false,
-        [string]$SelectedModel = "sonnet"
+        [bool]$EnableAutoRead = $false
     )
 
     $cwd = (Get-Location).Path
@@ -947,7 +881,6 @@ function Invoke-Cli {
         -CreateGlobalTasks $createGlobalTasks `
         -CreateProjectTasks $createProjectTasks `
         -EnableAutoRead $EnableAutoRead `
-        -SelectedModel $SelectedModel `
         -Cwd $cwd `
         -InRepo $inRepo
 
@@ -1007,13 +940,7 @@ function Main-Interactive {
             -ShowModel $true
     }
 
-    # 4. Model picker (global/both only)
-    $selectedModel = "sonnet"
-    if ($scope -eq "global" -or $scope -eq "both") {
-        $selectedModel = Show-ModelPicker
-    }
-
-    # 5. Options
+    # 4. Options
     Clear-Host
     Write-Banner
     Write-Host "  Options" -ForegroundColor White
@@ -1032,7 +959,7 @@ function Main-Interactive {
         $createProjectTasks = $projectOpts.CreateTasks
     }
 
-    # 6. Install
+    # 5. Install
     Write-Host ""
     Write-Host "  Installing..." -ForegroundColor White
 
@@ -1044,11 +971,10 @@ function Main-Interactive {
         -SelectedAgents $selectedAgents `
         -CreateGlobalTasks $createGlobalTasks `
         -CreateProjectTasks $createProjectTasks `
-        -SelectedModel $selectedModel `
         -Cwd $cwd `
         -InRepo $inRepo
 
-    # 7. Results
+    # 6. Results
     Show-Results -Log $log -Scope $scope -InRepo $inRepo -Cwd $cwd
 }
 
@@ -1175,9 +1101,9 @@ if ($Uninstall) {
 } elseif ($Restore) {
     Invoke-RestoreCli -Timestamp $RestoreTimestamp
 } elseif ($Both) {
-    Invoke-Cli -Scope "both" -SkipTasks $NoTasks -EnableAutoRead $AutoRead -SelectedModel $Model
+    Invoke-Cli -Scope "both" -SkipTasks $NoTasks -EnableAutoRead $AutoRead
 } elseif ($Global) {
-    Invoke-Cli -Scope "global" -SkipTasks $NoTasks -SelectedModel $Model
+    Invoke-Cli -Scope "global" -SkipTasks $NoTasks
 } elseif ($Project) {
     Invoke-Cli -Scope "project" -SkipTasks $NoTasks -EnableAutoRead $AutoRead
 } elseif (-not $Update) {

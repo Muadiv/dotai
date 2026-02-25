@@ -53,7 +53,7 @@ if git rev-parse --git-dir > /dev/null 2>&1; then
     fi
 fi
 
-printf '%b\n' "${DIM}[${RESET}${BOLD}${CYAN}${MODEL}${RESET}${DIM}]${RESET} 📂 ${DIM}${FOLDER}${RESET}${BRANCH}"
+printf '%b%s%b%s%b\n' "${DIM}[${RESET}${BOLD}${CYAN}" "${MODEL}" "${RESET}${DIM}]${RESET} 📂 ${DIM}" "${FOLDER}" "${RESET}${BRANCH}"
 
 # --- Line 2: context bar + cost + duration ---
 # Color the bar by usage threshold

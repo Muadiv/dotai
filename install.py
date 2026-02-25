@@ -81,12 +81,6 @@ HOME_STATUSLINE = HOME_DIR / "statusline.sh"
 CLAUDE_SETTINGS = CLAUDE_HOME / "settings.json"
 CLAUDE_STATUSLINE = CLAUDE_HOME / "statusline.sh"
 
-MODEL_CHOICES = {
-    "sonnet": "us.anthropic.claude-sonnet-4-6",
-    "opus": "us.anthropic.claude-opus-4-6-v1",
-    "haiku": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "none": None,
-}
 
 AUTO_READ_PERMISSIONS = {
     "permissions": {
@@ -177,7 +171,12 @@ def get_model(path: Path) -> str:
 
 def backup_file(path: Path) -> Path:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup = path.parent / f"{path.name}.bak.{ts}"
+    try:
+        rel = path.resolve().relative_to(CLAUDE_HOME.resolve())
+        backup = BACKUPS_DIR / f"{rel}.bak.{ts}"
+    except ValueError:
+        backup = BACKUPS_DIR / f"{path.name}.bak.{ts}"
+    backup.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(path, backup)
     return backup
 
@@ -248,6 +247,9 @@ def restore_snapshot(snap_dir: Path) -> list:
             continue
         rel = item.relative_to(snap_dir)
         dest = CLAUDE_HOME / rel
+        # Skip if destination is an existing symlink (could escape ~/.claude/)
+        if dest.exists() and dest.is_symlink():
+            continue
         # Verify destination stays under ~/.claude/
         try:
             dest.resolve().relative_to(resolved_home)
@@ -412,19 +414,8 @@ def deep_merge_settings(base: dict, overlay: dict) -> dict:
     return merged
 
 
-def check_aws_profile(name: str) -> bool:
-    """Check if an AWS profile exists in ~/.aws/config."""
-    aws_config = Path.home() / ".aws" / "config"
-    if not aws_config.exists():
-        return False
-    try:
-        text = aws_config.read_text(encoding="utf-8")
-        return f"[profile {name}]" in text
-    except OSError:
-        return False
 
-
-def install_global_settings(default_model: str, log: list) -> None:
+def install_global_settings(log: list) -> None:
     """Install global ~/.claude/settings.json from template, merging with existing."""
     CLAUDE_HOME.mkdir(parents=True, exist_ok=True)
 
@@ -434,10 +425,6 @@ def install_global_settings(default_model: str, log: list) -> None:
     except (json.JSONDecodeError, OSError) as e:
         log.append(("warning", f"~/.claude/settings.json (failed to read template: {e})"))
         return
-
-    # Inject model if selected
-    if default_model != "none" and MODEL_CHOICES.get(default_model):
-        template["model"] = MODEL_CHOICES[default_model]
 
     # Load existing settings
     existing = {}
@@ -469,10 +456,6 @@ def install_global_settings(default_model: str, log: list) -> None:
             if scalar_key in template.get("permissions", {}):
                 merged.setdefault("permissions", {})[scalar_key] = template["permissions"][scalar_key]
 
-    # Override model from template if user selected one
-    if default_model != "none" and MODEL_CHOICES.get(default_model):
-        merged["model"] = MODEL_CHOICES[default_model]
-
     # Compare with existing to detect changes
     if existing == merged:
         log.append(("current", "~/.claude/settings.json"))
@@ -489,19 +472,12 @@ def install_global_settings(default_model: str, log: list) -> None:
             )
             log.append(("installed", "~/.claude/settings.json"))
 
-    # Warn if AWS profile not found
-    aws_profile = template.get("env", {}).get("AWS_PROFILE", "default")
-    if not check_aws_profile(aws_profile):
-        log.append(("warning",
-            f"AWS profile '{aws_profile}' not found in ~/.aws/config — "
-            f"run: aws configure sso --profile {aws_profile}"))
-
     # Install statusline script
     if HOME_STATUSLINE.exists():
         smart_install(HOME_STATUSLINE, CLAUDE_STATUSLINE, "~/.claude/statusline.sh", log)
         # Ensure executable
         import stat
-        CLAUDE_STATUSLINE.chmod(CLAUDE_STATUSLINE.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        CLAUDE_STATUSLINE.chmod(CLAUDE_STATUSLINE.stat().st_mode | stat.S_IXUSR)
 
 
 def run_install(app) -> list:
@@ -551,8 +527,8 @@ def run_install(app) -> list:
                     shutil.copy2(src, dest)
                     log.append(("installed", f"~/.claude/tasks/{tpl}"))
 
-        # Global settings.json (Bedrock config + permissions)
-        install_global_settings(app.selected_model, log)
+        # Global settings.json (permissions)
+        install_global_settings(log)
 
     if app.scope in ("project", "both"):
         cwd = app.cwd
@@ -881,68 +857,6 @@ class AgentsScreen(Screen):
     def action_next(self) -> None:
         sl = self.query_one("#agents-list", SelectionList)
         self.app.selected_agents = set(sl.selected)
-        self.app.push_screen(ModelScreen())
-
-    def action_back(self) -> None:
-        self.app.pop_screen()
-
-    def action_quit(self) -> None:
-        self.app.exit()
-
-
-class ModelScreen(Screen):
-    BINDINGS = [
-        Binding("enter", "next", "Next", priority=True),
-        Binding("escape", "back", "Back"),
-        Binding("q", "quit", "Quit"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        with Container(classes="wizard"):
-            yield Static("Default Model", classes="title")
-            yield Static(
-                "Choose your default Claude model for Bedrock",
-                classes="subtitle",
-            )
-            yield Rule()
-            yield Static(
-                "  This sets the model Claude Code uses when you type 'claude'.",
-                classes="info",
-            )
-            yield Static(
-                "  You can always override per-session with --model.",
-                classes="info",
-            )
-            yield Static("")
-            with RadioSet(id="model-radio"):
-                yield RadioButton(
-                    "Sonnet — Balanced: good for most tasks, cost-effective",
-                    value=True,
-                )
-                yield RadioButton(
-                    "Opus — Maximum capability: complex architecture, deep reasoning",
-                )
-                yield RadioButton(
-                    "Haiku — Fast and light: quick edits, simple questions",
-                )
-                yield RadioButton(
-                    "No default — Don't set a default model",
-                )
-            with Horizontal(classes="buttons"):
-                yield Button("Back", id="btn-back")
-                yield Button("Next", variant="primary", id="btn-next")
-        yield Footer()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-next":
-            self.action_next()
-        elif event.button.id == "btn-back":
-            self.action_back()
-
-    def action_next(self) -> None:
-        radio = self.query_one("#model-radio", RadioSet)
-        idx = radio.pressed_index if radio.pressed_index >= 0 else 0
-        self.app.selected_model = {0: "sonnet", 1: "opus", 2: "haiku", 3: "none"}[idx]
         self.app.push_screen(OptionsScreen())
 
     def action_back(self) -> None:
@@ -1340,7 +1254,6 @@ class InstallerApp(App):
         self.create_global_tasks = True
         self.create_project_tasks = True
         self.auto_read = False
-        self.selected_model = "sonnet"
         self.restore_log = []
         self.restore_snap = ""
         self.cwd = Path.cwd()
@@ -1364,6 +1277,9 @@ class InstallerApp(App):
 def run_update() -> None:
     """Pull latest standards from git."""
     import subprocess
+    if not (SCRIPT_DIR / ".git").exists():
+        print("  --update only works when running from a git clone.")
+        return
     print("Updating standards from git...")
     result = subprocess.run(
         ["git", "-C", str(SCRIPT_DIR), "pull"],
@@ -1436,8 +1352,8 @@ def run_cli(args) -> None:
                     shutil.copy2(src, dest)
                     log.append(("installed", f"~/.claude/tasks/{tpl}"))
 
-        # Global settings.json (Bedrock config + permissions)
-        install_global_settings(args.model, log)
+        # Global settings.json (model config + permissions)
+        install_global_settings(log)
 
     # --- Project install ---
     if scope in ("project", "both"):
@@ -1548,7 +1464,7 @@ def run_uninstall() -> None:
 
     if removed:
         print(f"\n  Uninstalled. Backup saved to {snap}")
-        print("  To undo: ai-coding-standards --restore")
+        print("  To undo: dotai --restore")
     else:
         print("  Nothing to remove — no managed files found.")
     print()
@@ -1614,7 +1530,7 @@ def run_restore_cli(args) -> None:
 def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(
-        prog="ai-coding-standards",
+        prog="dotai",
         description="AI Coding Standards Installer",
     )
     scope_group = parser.add_mutually_exclusive_group()
@@ -1635,9 +1551,6 @@ def main() -> None:
                         help="Skip creating tasks/ directories")
     parser.add_argument("--auto-read", dest="auto_read", action="store_true",
                         help="Auto-approve read operations for agents in project")
-    parser.add_argument("--model", choices=["sonnet", "opus", "haiku", "none"],
-                        default="sonnet",
-                        help="Default Claude model for Bedrock (default: sonnet)")
     args = parser.parse_args()
 
     if args.update:
