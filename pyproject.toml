@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dotai"
+version = "1.0.0"
+description = "Opinionated AI coding standards — security guardrails, workflow rules, and specialized agents for Claude Code"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.8"
+dependencies = [
+    "textual>=0.47.0",
+]
+
+[project.scripts]
+dotai = "install:main"
+
+[tool.setuptools]
+py-modules = ["install"]
